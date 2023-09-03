@@ -106,9 +106,15 @@ private:
   // future);
   void reachedGoal(const NavigationGoalHandle::WrappedResult& result,
                    const geometry_msgs::msg::Point& frontier_goal);
+  void feedbackSendGoal(const std::shared_ptr<const nav2_msgs::action::NavigateToPose::Feedback> feedback,
+                  const geometry_msgs::msg::Point& frontier_goal);
 
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr
       marker_array_publisher_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr
+      current_goal_marker_publisher_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr
+      blacklisted_frontier_marker_publisher_;
   rclcpp::Logger logger_ = rclcpp::get_logger("ExploreNode");
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
@@ -116,7 +122,10 @@ private:
   Costmap2DClient costmap_client_;
   rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SharedPtr
       move_base_client_;
+//   rclcpp_action::Client<nav2_msgs::action::ComputePathToPose>::SharedPtr
+//       compute_path_to_pose_client_;
   frontier_exploration::FrontierSearch search_;
+//   rclcpp::TimerBase::SharedPtr planning_timer_;
   rclcpp::TimerBase::SharedPtr exploring_timer_;
   // rclcpp::TimerBase::SharedPtr oneshot_;
 
@@ -140,6 +149,8 @@ private:
   bool return_to_init_;
   std::string robot_base_frame_;
   bool resuming_ = false;
+  bool first_exploration_cycle = false;
+  bool found_new_fountier = false;
 };
 }  // namespace explore
 

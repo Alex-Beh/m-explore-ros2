@@ -95,6 +95,10 @@ Explore::Explore()
                                                                      "frontier"
                                                                      "s",
                                                                      10);
+    current_goal_marker_publisher_ = this->create_publisher<
+        visualization_msgs::msg::Marker>("explore/current_goal", 10);
+    blacklisted_frontier_marker_publisher_ = this->create_publisher<
+        visualization_msgs::msg::Marker>("explore/blacklisted_frontier", 10);
   }
 
   // Subscription to resume or stop exploration
@@ -163,7 +167,7 @@ void Explore::visualizeFrontiers(
   green.b = 0;
   green.a = 1.0;
 
-  RCLCPP_DEBUG(logger_, "visualising %lu frontiers", frontiers.size());
+  RCLCPP_INFO(logger_, "visualising %lu frontiers", frontiers.size());
   visualization_msgs::msg::MarkerArray markers_msg;
   std::vector<visualization_msgs::msg::Marker>& markers = markers_msg.markers;
   visualization_msgs::msg::Marker m;
@@ -238,11 +242,39 @@ void Explore::visualizeFrontiers(
 
 void Explore::makePlan()
 {
+  RCLCPP_INFO(logger_, "Making plan callback");
+
+  if(!first_exploration_cycle){
+    RCLCPP_INFO(logger_, "Sending first goal to exploration goal");
+
+    geometry_msgs::msg::Point target_position;
+    target_position.x = initial_pose_.position.x + 0.5;
+    target_position.y = initial_pose_.position.y + 0.5;
+    // send goal to move_base if we have something new to pursue
+    auto goal = nav2_msgs::action::NavigateToPose::Goal();
+    goal.pose.pose.position = target_position;
+    goal.pose.pose.orientation.w = 1.;
+    goal.pose.header.frame_id = costmap_client_.getGlobalFrameID();
+    goal.pose.header.stamp = this->now();
+
+    auto send_goal_options =
+        rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SendGoalOptions();
+    send_goal_options.result_callback =
+        [this,
+        target_position](const NavigationGoalHandle::WrappedResult& result) {
+          reachedGoal(result, target_position);
+        };
+    move_base_client_->async_send_goal(goal, send_goal_options);
+
+    first_exploration_cycle = true;
+    return;
+  }
+
   // find frontiers
   auto pose = costmap_client_.getRobotPose();
   // get frontiers sorted according to cost
   auto frontiers = search_.searchFrom(pose.position);
-  RCLCPP_DEBUG(logger_, "found %lu frontiers", frontiers.size());
+  RCLCPP_INFO(logger_, "found %lu frontiers", frontiers.size());
   for (size_t i = 0; i < frontiers.size(); ++i) {
     RCLCPP_DEBUG(logger_, "frontier %zd cost: %f", i, frontiers[i].cost);
   }
@@ -256,6 +288,22 @@ void Explore::makePlan()
   // publish frontiers as visualization markers
   if (visualize_) {
     visualizeFrontiers(frontiers);
+
+    visualization_msgs::msg::Marker blacklisted_frontier;
+    blacklisted_frontier.header.frame_id = costmap_client_.getGlobalFrameID();
+    blacklisted_frontier.header.stamp = this->now();
+    blacklisted_frontier.ns = "goal";
+    blacklisted_frontier.id = 0;
+    blacklisted_frontier.type = visualization_msgs::msg::Marker::POINTS;
+    blacklisted_frontier.action = visualization_msgs::msg::Marker::ADD;
+    blacklisted_frontier.points = frontier_blacklist_;
+    blacklisted_frontier.scale.x = 0.5;
+    blacklisted_frontier.scale.y = 0.5;
+    blacklisted_frontier.scale.z = 0.5;
+    blacklisted_frontier.color.r = 255;
+    blacklisted_frontier.color.b = 255;
+    blacklisted_frontier.color.a = 255;
+    blacklisted_frontier_marker_publisher_->publish(blacklisted_frontier);
   }
 
   // find non blacklisted frontier
@@ -284,7 +332,7 @@ void Explore::makePlan()
   if ((this->now() - last_progress_ >
       tf2::durationFromSec(progress_timeout_)) && !resuming_) {
     frontier_blacklist_.push_back(target_position);
-    RCLCPP_DEBUG(logger_, "Adding current goal to black list");
+    RCLCPP_INFO(logger_, "Adding current goal to black list due to timeout");
     makePlan();
     return;
   }
@@ -294,12 +342,30 @@ void Explore::makePlan()
     resuming_ = false;
   }
 
+  visualization_msgs::msg::Marker goal_marker;
+  goal_marker.header.frame_id = costmap_client_.getGlobalFrameID();
+  goal_marker.header.stamp = this->now();
+  goal_marker.ns = "goal";
+  goal_marker.id = 0;
+  goal_marker.type = visualization_msgs::msg::Marker::SPHERE;
+  goal_marker.action = visualization_msgs::msg::Marker::ADD;
+  goal_marker.pose.position = target_position;
+  goal_marker.pose.orientation.w = 1.0;
+  goal_marker.scale.x = 0.5;
+  goal_marker.scale.y = 0.5;
+  goal_marker.scale.z = 0.5;
+  goal_marker.color.r = 255;
+  goal_marker.color.g = 255;
+  goal_marker.color.a = 255;
+  current_goal_marker_publisher_->publish(goal_marker);
+
   // we don't need to do anything if we still pursuing the same goal
   if (same_goal) {
+    RCLCPP_INFO(logger_, "Same goal, not making new plan");
     return;
   }
 
-  RCLCPP_DEBUG(logger_, "Sending goal to move base nav2");
+  RCLCPP_INFO(logger_, "Sending goal to move base nav2");
 
   // send goal to move_base if we have something new to pursue
   auto goal = nav2_msgs::action::NavigateToPose::Goal();
@@ -314,11 +380,19 @@ void Explore::makePlan()
   // std::bind(&Explore::goal_response_callback, this, _1);
   // send_goal_options.feedback_callback =
   //   std::bind(&Explore::feedback_callback, this, _1, _2);
-  send_goal_options.result_callback =
+  send_goal_options.feedback_callback =
+    [this,
+      target_position](typename rclcpp_action::ClientGoalHandle<nav2_msgs::action::NavigateToPose>::SharedPtr,
+        const std::shared_ptr<const nav2_msgs::action::NavigateToPose::Feedback> feedback) {
+        feedbackSendGoal(feedback, target_position);
+      };
+  send_goal_options.result_callback = 
       [this,
        target_position](const NavigationGoalHandle::WrappedResult& result) {
         reachedGoal(result, target_position);
       };
+  found_new_fountier = true;
+  RCLCPP_INFO(logger_, "Sending new goal to move base nav2");
   move_base_client_->async_send_goal(goal, send_goal_options);
 }
 
@@ -333,6 +407,11 @@ void Explore::returnToInitialPose()
 
   auto send_goal_options =
       rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SendGoalOptions();
+  auto initial_position = initial_pose_.position;
+  send_goal_options.result_callback =
+      [this, initial_position](const NavigationGoalHandle::WrappedResult& result) {
+        reachedGoal(result, initial_position);
+      };
   move_base_client_->async_send_goal(goal, send_goal_options);
 }
 
@@ -345,12 +424,26 @@ bool Explore::goalOnBlacklist(const geometry_msgs::msg::Point& goal)
   for (auto& frontier_goal : frontier_blacklist_) {
     double x_diff = fabs(goal.x - frontier_goal.x);
     double y_diff = fabs(goal.y - frontier_goal.y);
-
-    if (x_diff < tolerace * costmap2d->getResolution() &&
-        y_diff < tolerace * costmap2d->getResolution())
+    double dist = x_diff * x_diff + y_diff * y_diff;
+    // costmap2d->getResolution() = 0.05
+    // tolerace * costmap2d->getResolution() = 0.25
+    // if (x_diff < tolerace * costmap2d->getResolution() &&
+    //     y_diff < tolerace * costmap2d->getResolution())
+    if(dist < 1.0*1.0)
       return true;
   }
   return false;
+}
+
+void Explore::feedbackSendGoal(const std::shared_ptr<const nav2_msgs::action::NavigateToPose::Feedback> feedback,
+                                     const geometry_msgs::msg::Point& frontier_goal)
+
+{
+  if(feedback->number_of_recoveries >=8){
+    RCLCPP_INFO(logger_, "Number of recoveries is greater than 8, cancel the goal and add it to the blacklist");
+    // FIXME: should abort instead of cancel
+    move_base_client_->async_cancel_all_goals();
+  }
 }
 
 void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
@@ -358,17 +451,31 @@ void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
 {
   switch (result.code) {
     case rclcpp_action::ResultCode::SUCCEEDED:
-      RCLCPP_DEBUG(logger_, "Goal was successful");
+      found_new_fountier = false;
+      RCLCPP_INFO(logger_, "Goal was successful");
       break;
     case rclcpp_action::ResultCode::ABORTED:
-      RCLCPP_DEBUG(logger_, "Goal was aborted");
-      frontier_blacklist_.push_back(frontier_goal);
-      RCLCPP_DEBUG(logger_, "Adding current goal to black list");
+      RCLCPP_INFO(logger_, "Goal was aborted");
+      if(found_new_fountier){
+        // reset the found_new_fountier flag
+        found_new_fountier = false;
+      }
+      else{
+        frontier_blacklist_.push_back(frontier_goal);
+        RCLCPP_INFO(logger_, "Adding current goal to black list");  
+      }
       // If it was aborted probably because we've found another frontier goal,
       // so just return and don't make plan again
       return;
     case rclcpp_action::ResultCode::CANCELED:
-      RCLCPP_DEBUG(logger_, "Goal was canceled");
+      RCLCPP_INFO(logger_, "Goal was canceled");
+      if(found_new_fountier){
+        found_new_fountier = false;
+      }
+      else{
+        frontier_blacklist_.push_back(frontier_goal);
+        RCLCPP_INFO(logger_, "Adding current goal to black list");  
+      }
       // If goal canceled might be because exploration stopped from topic. Don't make new plan.
       return;
     default:
@@ -385,7 +492,8 @@ void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
 
   // Because of the 1-thread-executor nature of ros2 I think timer is not
   // needed.
-  makePlan();
+  // (Alex) remove it because it will cause the timer to be restarted
+  // makePlan();
 }
 
 void Explore::start()
@@ -396,10 +504,12 @@ void Explore::start()
 void Explore::stop(bool finished_exploring)
 {
   RCLCPP_INFO(logger_, "Exploration stopped.");
+  RCLCPP_INFO(logger_, "async_cancel_all_goals() is called from stop()");
   move_base_client_->async_cancel_all_goals();
   exploring_timer_->cancel();
 
   if (return_to_init_ && finished_exploring) {
+    std::this_thread::sleep_for(std::chrono::seconds(3));
     returnToInitialPose();
   }
 }
@@ -419,12 +529,7 @@ void Explore::resume()
 int main(int argc, char** argv)
 {
   rclcpp::init(argc, argv);
-  // ROS1 code
-  /*
-  if (ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME,
-                                     ros::console::levels::Debug)) {
-    ros::console::notifyLoggerLevelsChanged();
-  } */
+
   rclcpp::spin(
       std::make_shared<explore::Explore>());  // std::move(std::make_unique)?
   rclcpp::shutdown();

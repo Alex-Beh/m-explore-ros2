@@ -52,11 +52,11 @@ FrontierSearch::searchFrom(geometry_msgs::msg::Point position)
   std::queue<unsigned int> bfs;
 
   // find closest clear cell to start search
-  unsigned int clear, pos = costmap_->getIndex(mx, my);
-  if (nearestCell(clear, pos, FREE_SPACE, *costmap_)) {
+  unsigned int clear, robot_pos = costmap_->getIndex(mx, my);
+  if (nearestCell(clear, robot_pos, FREE_SPACE, *costmap_)) {
     bfs.push(clear);
   } else {
-    bfs.push(pos);
+    bfs.push(robot_pos);
     RCLCPP_WARN(rclcpp::get_logger("FrontierSearch"), "Could not find nearby "
                                                       "clear cell to start "
                                                       "search");
@@ -74,11 +74,11 @@ FrontierSearch::searchFrom(geometry_msgs::msg::Point position)
       if (map_[nbr] <= map_[idx] && !visited_flag[nbr]) {
         visited_flag[nbr] = true;
         bfs.push(nbr);
-        // check if cell is new frontier cell (unvisited, NO_INFORMATION, free
-        // neighbour)
+      // check if cell is new frontier cell (unvisited, NO_INFORMATION, free
+      // neighbour)
       } else if (isNewFrontierCell(nbr, frontier_flag)) {
         frontier_flag[nbr] = true;
-        Frontier new_frontier = buildNewFrontier(nbr, pos, frontier_flag);
+        Frontier new_frontier = buildNewFrontier(nbr, robot_pos, frontier_flag);
         if (new_frontier.size * costmap_->getResolution() >=
             min_frontier_size_) {
           frontier_list.push_back(new_frontier);
@@ -124,6 +124,10 @@ Frontier FrontierSearch::buildNewFrontier(unsigned int initial_cell,
   costmap_->indexToCells(reference, rx, ry);
   costmap_->mapToWorld(rx, ry, reference_x, reference_y);
 
+  double max_wx, max_wy, min_wx, min_wy;
+  max_wx = max_wy = 0.0;
+  min_wx = min_wy = std::numeric_limits<unsigned int>::max();
+
   while (!bfs.empty()) {
     unsigned int idx = bfs.front();
     bfs.pop();
@@ -151,14 +155,21 @@ Frontier FrontierSearch::buildNewFrontier(unsigned int initial_cell,
         output.centroid.x += wx;
         output.centroid.y += wy;
 
+        if(wx > max_wx)
+          max_wx = wx;
+        if(wy > max_wy)
+          max_wy = wy;
+        if(wx < min_wx)
+          min_wx = wx;
+        if(wy < min_wy)
+          min_wy = wy;
+
         // determine frontier's distance from robot, going by closest gridcell
         // to robot
         double distance = sqrt(pow((double(reference_x) - double(wx)), 2.0) +
                                pow((double(reference_y) - double(wy)), 2.0));
         if (distance < output.min_distance) {
           output.min_distance = distance;
-          output.middle.x = wx;
-          output.middle.y = wy;
         }
 
         // add to queue for breadth first search
@@ -170,6 +181,18 @@ Frontier FrontierSearch::buildNewFrontier(unsigned int initial_cell,
   // average out frontier centroid
   output.centroid.x /= output.size;
   output.centroid.y /= output.size;
+
+  double diff_centroid_max_coor = sqrt(pow((max_wx - output.centroid.x), 2.0) +
+                               pow((max_wy - output.centroid.y), 2.0));
+  double diff_centroid_min_coor = sqrt(pow((min_wx - output.centroid.x), 2.0) +
+                                pow((min_wy - output.centroid.y), 2.0));
+  if(diff_centroid_max_coor >= 3.0 || diff_centroid_min_coor >= 3.0)
+  {
+    // RCLCPP_INFO(rclcpp::get_logger("FrontierSearch"), "Frontier is too large, "
+    //                                                    "discarding it");
+    // output.size = 0;
+    // output.points.clear();
+  }
   return output;
 }
 

@@ -15,7 +15,6 @@ struct Frontier {
   double cost;
   geometry_msgs::msg::Point initial;
   geometry_msgs::msg::Point centroid;
-  geometry_msgs::msg::Point middle;
   std::vector<geometry_msgs::msg::Point> points;
 };
 
