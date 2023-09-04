@@ -137,6 +137,7 @@ private:
   double prev_distance_;
   rclcpp::Time last_progress_;
   size_t last_markers_count_;
+  size_t same_goal_count_;
 
   geometry_msgs::msg::Pose initial_pose_;
   void returnToInitialPose(void);

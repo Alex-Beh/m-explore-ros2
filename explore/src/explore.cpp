@@ -58,6 +58,7 @@ Explore::Explore()
   , costmap_client_(*this, &tf_buffer_)
   , prev_distance_(0)
   , last_markers_count_(0)
+  , same_goal_count_(0)
 {
   double timeout;
   double min_frontier_size;
@@ -360,9 +361,15 @@ void Explore::makePlan()
   current_goal_marker_publisher_->publish(goal_marker);
 
   // we don't need to do anything if we still pursuing the same goal
-  if (same_goal) {
+  if (same_goal && same_goal_count_<10) {
     RCLCPP_INFO(logger_, "Same goal, not making new plan");
+    same_goal_count_ = (same_goal_count_ + 1) % 10;
     return;
+  }
+  else{
+    same_goal_count_ = 0;
+    found_new_fountier = false;
+    RCLCPP_INFO(logger_, "Send the goal again after 10 times of same goal");
   }
 
   RCLCPP_INFO(logger_, "Sending goal to move base nav2");
