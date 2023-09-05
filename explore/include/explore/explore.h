@@ -152,6 +152,7 @@ private:
   bool resuming_ = false;
   bool first_exploration_cycle = false;
   bool found_new_fountier = false;
+  bool finished_exploring_ = false;
 };
 }  // namespace explore
 

@@ -46,7 +46,7 @@ inline static bool same_point(const geometry_msgs::msg::Point& one,
   double dx = one.x - two.x;
   double dy = one.y - two.y;
   double dist = sqrt(dx * dx + dy * dy);
-  return dist < 0.01;
+  return dist < 0.05;
 }
 
 namespace explore
@@ -243,6 +243,12 @@ void Explore::visualizeFrontiers(
 
 void Explore::makePlan()
 {
+  RCLCPP_INFO(logger_, "------------------------------------------");
+  if(finished_exploring_){
+    RCLCPP_INFO(logger_, "Exploration finished, not making new plan");
+    exploring_timer_->cancel();
+    return;
+  }
   RCLCPP_INFO(logger_, "Making plan callback");
 
   if(!first_exploration_cycle){
@@ -325,6 +331,7 @@ void Explore::makePlan()
 
   prev_goal_ = target_position;
   if (!same_goal || prev_distance_ > frontier->min_distance) {
+    RCLCPP_INFO(logger_, "making progress");
     // we have different goal or we made some progress
     last_progress_ = this->now();
     prev_distance_ = frontier->min_distance;
@@ -336,6 +343,9 @@ void Explore::makePlan()
     RCLCPP_INFO(logger_, "Adding current goal to black list due to timeout");
     makePlan();
     return;
+  }
+  else{
+    RCLCPP_INFO_STREAM(logger_, "sec from last_progress: "<< (this->now() - last_progress_).seconds());
   }
 
   // ensure only first call of makePlan was set resuming to true
@@ -361,15 +371,9 @@ void Explore::makePlan()
   current_goal_marker_publisher_->publish(goal_marker);
 
   // we don't need to do anything if we still pursuing the same goal
-  if (same_goal && same_goal_count_<10) {
+  if (same_goal){
     RCLCPP_INFO(logger_, "Same goal, not making new plan");
-    same_goal_count_ = (same_goal_count_ + 1) % 10;
     return;
-  }
-  else{
-    same_goal_count_ = 0;
-    found_new_fountier = false;
-    RCLCPP_INFO(logger_, "Send the goal again after 10 times of same goal");
   }
 
   RCLCPP_INFO(logger_, "Sending goal to move base nav2");
@@ -476,13 +480,9 @@ void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
       return;
     case rclcpp_action::ResultCode::CANCELED:
       RCLCPP_INFO(logger_, "Goal was canceled");
-      if(found_new_fountier){
-        found_new_fountier = false;
-      }
-      else{
-        frontier_blacklist_.push_back(frontier_goal);
-        RCLCPP_INFO(logger_, "Adding current goal to black list");  
-      }
+      found_new_fountier = false;
+      frontier_blacklist_.push_back(frontier_goal);
+      RCLCPP_INFO(logger_, "Adding current goal to black list");  
       // If goal canceled might be because exploration stopped from topic. Don't make new plan.
       return;
     default:
@@ -500,7 +500,7 @@ void Explore::reachedGoal(const NavigationGoalHandle::WrappedResult& result,
   // Because of the 1-thread-executor nature of ros2 I think timer is not
   // needed.
   // (Alex) remove it because it will cause the timer to be restarted
-  // makePlan();
+  makePlan();
 }
 
 void Explore::start()
@@ -514,8 +514,9 @@ void Explore::stop(bool finished_exploring)
   RCLCPP_INFO(logger_, "async_cancel_all_goals() is called from stop()");
   move_base_client_->async_cancel_all_goals();
   exploring_timer_->cancel();
-
+  
   if (return_to_init_ && finished_exploring) {
+    finished_exploring_ = true;
     std::this_thread::sleep_for(std::chrono::seconds(3));
     returnToInitialPose();
   }
